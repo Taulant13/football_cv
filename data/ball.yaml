@@ -1,0 +1,7 @@
+# YOLOv8 dataset config for soccer ball detection.
+path: ../data/processed
+train: train/images
+val: val/images
+
+names:
+  0: ball

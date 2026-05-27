@@ -1,0 +1,21 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# SoccerNet data covered by NDA
+data/raw/
+data/processed/
+data/sample_gt.png
+
+# Generated artifacts
+outputs/
+runs/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
