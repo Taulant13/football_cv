@@ -45,7 +45,7 @@ After 15 consecutive missed or rejected frames the tracker resets. Otherwise sta
 
 ### Speed estimation
 
-Consecutive tracker positions give pixel velocity. A one-time 2-click calibration (`calibrate_scale.py`) measures pixels-per-meter against a known feature in the frame (e.g. penalty spot - goalline = 11 m). Multiply by frame rate, smooth with a 5-frame moving average.
+Consecutive tracker positions give pixel velocity. Pixels-per-meter is derived per frame from the detected ball's box width (~0.22m) taken as a median over a short window. Multiply by frame rate, smooth with a 5-frame moving average.
 
 ## Repository layout
 
@@ -55,7 +55,6 @@ football_cv/
 ├── requirements.txt
 ├── data/
 │   ├── ball.yaml       YOLOv8 dataset config
-│   └── scale.json      Calibrated px-per-meter (SNMOT-060)
 ├── models/
 │   └── yolov8_ball.pt  Fine-tuned weights (22 MB)
 └── src/
@@ -65,8 +64,7 @@ football_cv/
     ├── track.py                Kalman tracker (gating + reset)
     ├── pipeline.py             detect -> pick -> track -> draw
     ├── pipeline_speed.py       pipeline.py + speed overlay
-    ├── speed.py                Pixel → m/s converter
-    └── calibrate_scale.py      Interactive 2-click calibration
+    └── speed.py                Pixel → m/s converter
 ```
 
 ## Setup
@@ -92,7 +90,6 @@ python src/prepare_dataset.py        MOT, YOLO under data/processed/
 yolo detect train data=data/ball.yaml model=yolov8s.pt imgsz=1280 epochs=30 batch=8
 python src/detect_finetuned.py       outputs/02_finetuned.mp4
 python src/pipeline.py               outputs/03_trajectory.mp4
-python src/calibrate_scale.py        prereq interactive 2-click writes data/scale.json
 python src/pipeline_speed.py         outputs/04_speed.mp4
 ```
 
@@ -131,4 +128,4 @@ A few choices:
 ## Limitations
 
 - Single broadcast camera only
-- Speed scale is calibrated once per camera zoom from a 2-click feature, report numbers as **relative**, not broadcast-grade absolute.
+- Speed scale is auto-derived each frame from the ball's apparent size, but assumes the detector box matches the true ball diameter.
