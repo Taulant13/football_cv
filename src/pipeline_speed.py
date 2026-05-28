@@ -1,12 +1,13 @@
 """Pipeline with live speed overlay.
 
-Same detect -> pick -> track -> draw chain as pipeline.py, plus a new stage:
+Same detect -> pick -> track -> draw chain as pipeline.py, plus:
+  - BallSizeScale derives a per-frame pixels-per-meter scale from the
+    detected ball's box width (no manual calibration; adapts to zoom)
   - SpeedEstimator converts tracker positions to a smoothed m/s readout
-  - The current speed is displayed in the top-left of every frame
+  - The current speed and scale are displayed in the top-left of every frame
 
-Reads the pixel-to-meter scale from data/scale.json."""
+Output: outputs/04_speed.mp4"""
 
-import json
 from collections import deque
 from pathlib import Path
 
@@ -16,14 +17,13 @@ from tqdm import tqdm
 from ultralytics import YOLO
 
 from track import BallTracker
-from speed import SpeedEstimator
+from speed import SpeedEstimator, BallSizeScale
 
 ROOT = Path(__file__).resolve().parent.parent
 SEQ_DIR = ROOT / "data" / "raw" / "tracking" / "train" / "SNMOT-060"
 IMG_DIR = SEQ_DIR / "img1"
 OUT_PATH = ROOT / "outputs" / "04_speed.mp4"
 WEIGHTS = ROOT / "models" / "yolov8_ball.pt"
-SCALE_PATH = ROOT / "data" / "scale.json"
 
 CONF_THRESHOLD = 0.20
 FPS = 25
@@ -33,12 +33,15 @@ SPEED_SMOOTH_WINDOW = 5
 
 
 def pick_best_detection(boxes):
+    """Return ((cx, cy), width_px) for the highest-confidence box, or None."""
     if boxes is None or len(boxes) == 0:
         return None
     confs = boxes.conf.cpu().numpy()
     best_idx = int(np.argmax(confs))
     x1, y1, x2, y2 = boxes.xyxy[best_idx].cpu().numpy()
-    return ((x1 + x2) / 2, (y1 + y2) / 2)
+    center = ((x1 + x2) / 2, (y1 + y2) / 2)
+    width = float(x2 - x1)
+    return center, width
 
 
 def draw_trail(img, trail: deque) -> None:
@@ -54,23 +57,9 @@ def draw_trail(img, trail: deque) -> None:
         cv2.line(img, p1, p2, color, thickness)
 
 
-def load_scale() -> float:
-    if not SCALE_PATH.exists():
-        raise SystemExit(
-            f"Calibration file not found\n"
-            "Run `python src/calibrate_scale.py` first to set the pixel-to-meter scale."
-        )
-    cfg = json.loads(SCALE_PATH.read_text())
-    ppm = float(cfg["px_per_meter"])
-    print(f"Loaded scale: {ppm:.3f} pixels per meter (from {SCALE_PATH.name})")
-    return ppm
-
-
 def main() -> None:
     if not WEIGHTS.exists():
         raise SystemExit(f"Weights not found: {WEIGHTS}")
-
-    px_per_meter = load_scale()
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     frame_paths = sorted(IMG_DIR.glob("*.jpg"))
@@ -82,8 +71,8 @@ def main() -> None:
 
     model = YOLO(str(WEIGHTS))
     tracker = BallTracker(reset_after_misses=RESET_AFTER_MISSES)
-    speed_est = SpeedEstimator(px_per_meter=px_per_meter, fps=FPS,
-                                smooth_window=SPEED_SMOOTH_WINDOW)
+    speed_est = SpeedEstimator(fps=FPS, smooth_window=SPEED_SMOOTH_WINDOW)
+    scale_est = BallSizeScale()
     trail: deque = deque(maxlen=TRAIL_LENGTH)
 
     peak_speed = 0.0
@@ -92,10 +81,18 @@ def main() -> None:
     for fp in tqdm(frame_paths, desc="speed pipeline"):
         img = cv2.imread(str(fp))
         results = model.predict(img, conf=CONF_THRESHOLD, verbose=False)
-        measurement = pick_best_detection(results[0].boxes)
+        picked = pick_best_detection(results[0].boxes)
+        measurement = picked[0] if picked is not None else None
+        box_width = picked[1] if picked is not None else None
 
         position = tracker.update(measurement)
-        speed_mps = speed_est.update(position)
+
+        # Update the scale only from detections that passed gating; carry the
+        # last good scale forward through gaps and rejected teleports.
+        usable = box_width if tracker.last_used_measurement else None
+        ppm = scale_est.update(usable)
+
+        speed_mps = speed_est.update(position, ppm)
 
         if position is not None:
             trail.append(position)
@@ -123,6 +120,14 @@ def main() -> None:
             speed_kmh = speed_mps * 3.6
             cv2.putText(img, f"speed: {speed_mps:5.1f} m/s  ({speed_kmh:5.1f} km/h)",
                         (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+
+        # scale readout (below speed)
+        if scale_est.last is not None:
+            scale_txt = f"scale: ball-size {scale_est.last:.1f} px/m"
+        else:
+            scale_txt = "scale: ball-size (init...)"
+        cv2.putText(img, scale_txt, (20, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
 
         writer.write(img)
 
